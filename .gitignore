@@ -5,6 +5,7 @@ __pycache__/
 *.pyd
 *.log
 *.tmp
+*.ipynb_checkpoints
 
 # Ignorar pastas virtuais e ambientes
 env/
@@ -17,8 +18,10 @@ venv/
 *.json
 modelos_treinados/
 models/
+pdf_graficos/
 *.pt
 *.h5
+*.safetensors
 
 # Ignorar arquivos de sistema
 .DS_Store
