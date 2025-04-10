@@ -18,7 +18,6 @@ venv/
 *.json
 modelos_treinados/
 models/
-pdf_graficos/
 *.pt
 *.h5
 *.safetensors
