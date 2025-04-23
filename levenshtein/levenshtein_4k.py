@@ -97,11 +97,13 @@ plt.bar(x + largura, falsos_positivos, width=largura, color="red", label="Falsos
 
 plt.xlabel("Amostras (500 perfis cada)")
 plt.ylabel("Quantidade")
-plt.title("Acertos vs FN (A1–A10) e FP (A11–A20)")
+plt.title("Acertos vs Falsos Negativos vs Falsos Positivos (Levenshtein)")
 plt.xticks(x, grupos, rotation=45)
 plt.legend()
 plt.grid(axis="y", linestyle="--", alpha=0.7)
+
 plt.tight_layout()
+plt.savefig("C:/TCC2/pdf_graficos/levenshtein_4k.pdf")
 plt.show()
 
 print("\n📊 Classification Report (Levenshtein):")

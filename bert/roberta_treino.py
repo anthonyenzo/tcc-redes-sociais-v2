@@ -13,6 +13,16 @@ import re
 import time
 import gc
 import os
+import random
+
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+torch.cuda.manual_seed(SEED)
+torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 logging.set_verbosity_error()
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
@@ -37,7 +47,7 @@ df["Username"] = df["Username"].astype(str).str.strip()
 
 print("🧪 Dividindo dados em treino e teste...")
 train_texts, test_texts, train_labels, test_labels = train_test_split(
-    df[["Name", "Username"]].values.tolist(), df["Label"].values.tolist(), test_size=0.2, random_state=None
+    df[["Name", "Username"]].values.tolist(), df["Label"].values.tolist(), test_size=0.2, random_state=42
 )
 
 tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
@@ -127,9 +137,9 @@ def train_model(model, train_loader, optimizer, criterion, test_loader, epochs=1
 print("🚀 Iniciando treinamento...")
 train_model(model, train_loader, optimizer, criterion, test_loader, epochs=10)
 
-model.save_pretrained("modelo_roberta_20000_balanceado_treinado")
-tokenizer.save_pretrained("modelo_roberta_20000_balanceado_treinado")
-print("✅ Modelo RoBERTa treinado salvo com sucesso!")
+# model.save_pretrained("modelo_roberta_20000_balanceado_treinado")
+# tokenizer.save_pretrained("modelo_roberta_20000_balanceado_treinado")
+# print("✅ Modelo RoBERTa treinado salvo com sucesso!")
 
 # Avaliação do modelo
 print("🔍 Avaliando modelo...")
@@ -198,9 +208,12 @@ plt.bar(x, falsos_negativos, width=largura, color="orange", label="Falsos Negati
 plt.bar(x + largura, falsos_positivos, width=largura, color="red", label="Falsos Positivos")
 plt.xlabel("Amostras (500 perfis cada)")
 plt.ylabel("Quantidade")
-plt.title("Acertos, Falsos Negativos e Falsos Positivos por Amostra (RoBERTa)")
+plt.title("Acertos vs Falsos Negativos vs Falsos Positivos (RoBERTa)")
 plt.xticks(x, grupos, rotation=45)
 plt.legend()
 plt.grid(axis="y", linestyle="--", alpha=0.7)
+
 plt.tight_layout()
+plt.savefig("C:/TCC2/pdf_graficos/roberta_20k_4k.pdf")
+
 plt.show()

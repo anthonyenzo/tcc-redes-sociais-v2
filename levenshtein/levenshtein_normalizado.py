@@ -99,10 +99,12 @@ plt.bar(x[10:] + largura/2, falsos_positivos[10:], width=largura, color="red", l
 
 plt.xlabel("Amostras (1000 perfis cada)")
 plt.ylabel("Quantidade")
-plt.title("Acertos vs FN (A1–A10) e FP (A11–A20)")
+plt.title("Acertos vs Falsos Negativos (A1–A10) e Falsos Positivos (A11–A20)")
 plt.xticks(x, grupos, rotation=45)
 plt.legend()
 plt.grid(axis="y", linestyle="--", alpha=0.7)
+
+plt.savefig("C:/TCC2/pdf_graficos/levenshtein_normalizado_20k.pdf")
 plt.tight_layout()
 plt.show()
 
