@@ -1,219 +1,247 @@
+# ------------------------------------------------------------
+# RoBERTa – Treino + validação + busca de limiar automaticamente
+# ------------------------------------------------------------
 import pandas as pd
 import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
-from transformers import RobertaTokenizer, RobertaForSequenceClassification
-from transformers import logging
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import classification_report
-import matplotlib.pyplot as plt
 import numpy as np
+import random
 import re
 import time
 import gc
 import os
-import random
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+from transformers import (RobertaTokenizer,
+                          RobertaForSequenceClassification,
+                          logging)
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.cm as cm
+import matplotlib.pyplot as plt
+import time
 
+start_prog = time.time()
+# ---------- 1. reproducibilidade ----------
 SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 torch.manual_seed(SEED)
-torch.cuda.manual_seed(SEED)
 torch.cuda.manual_seed_all(SEED)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
-
 logging.set_verbosity_error()
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 gc.collect()
 torch.cuda.empty_cache()
 
-caminho_csv = "C:/TCC2/data/usernames_20000_balanceado_embaralhado.csv"
+# ---------- 2. dados ----------
+CSV_PATH = "C:/TCC2/data/dataset_v3.csv"
+print("📥  Lendo csv…")
+df = pd.read_csv(CSV_PATH)
 
-inicio = time.time()
 
-print("📥 Carregando dados...")
-df = pd.read_csv(caminho_csv)
+def norm(s): return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
-def normalizar_nome(name):
-    name = name.lower()
-    name = re.sub(r'[^a-z0-9]', '', name)
-    return name
 
-print("🔧 Pré-processando dados...")
-df["Name"] = df["Name"].astype(str).apply(normalizar_nome)
-df["Username"] = df["Username"].astype(str).str.strip()
+df["Name"] = df["Name"].apply(norm)
+df["Username"] = df["Username"].str.strip().str.lower()
+df["Label"] = df["Label"].astype(int)
 
-print("🧪 Dividindo dados em treino e teste...")
-train_texts, test_texts, train_labels, test_labels = train_test_split(
-    df[["Name", "Username"]].values.tolist(), df["Label"].values.tolist(), test_size=0.2, random_state=42
-)
+X = df[["Name", "Username"]].values
+y = df["Label"].values
 
-tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+# ------ 2.1  split -> treino / validação / teste (80 / 10 / 10) ------
+X_tmp, X_test, y_tmp, y_test = train_test_split(X, y, test_size=0.10,
+                                                random_state=SEED, stratify=y)
+X_train, X_val, y_train, y_val = train_test_split(X_tmp, y_tmp, test_size=0.1111,
+                                                  random_state=SEED, stratify=y_tmp)
+print(
+    f"🔎  Tamanhos  train={len(y_train)}  val={len(y_val)}  test={len(y_test)}")
 
-class UserProfileDataset(Dataset):
-    def __init__(self, texts, labels):
-        self.texts = texts
-        self.labels = labels
+tok = RobertaTokenizer.from_pretrained("roberta-base")
 
-    def __len__(self):
-        return len(self.texts)
 
-    def __getitem__(self, idx):
-        name, username = self.texts[idx]
-        inputs = tokenizer(name, username, padding="max_length", truncation=True, max_length=32, return_tensors="pt")
-        return {
-            "input_ids": inputs["input_ids"].squeeze(0),
-            "attention_mask": inputs["attention_mask"].squeeze(0),
-            "labels": torch.tensor(self.labels[idx], dtype=torch.float)
-        }
+class ProfileDS(Dataset):
+    def __init__(self, feats, labels): self.X, self.y = feats, labels
+    def __len__(self): return len(self.X)
 
-train_dataset = UserProfileDataset(train_texts, train_labels)
-test_dataset = UserProfileDataset(test_texts, test_labels)
+    def __getitem__(self, i):
+        n, u = self.X[i]
+        enc = tok(n, u, truncation=True, max_length=32,
+                  padding='max_length', return_tensors="pt")
+        return {"input_ids": enc["input_ids"].squeeze(0),
+                "attention_mask": enc["attention_mask"].squeeze(0),
+                "labels": torch.tensor(self.y[i], dtype=torch.long)}
 
-train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
-test_loader = DataLoader(test_dataset, batch_size=4, shuffle=False)
 
+ds_train = ProfileDS(X_train, y_train)
+ds_val = ProfileDS(X_val,   y_val)
+ds_test = ProfileDS(X_test,  y_test)
+
+# ------ 2.2  sampler balanceado  ------
+class_counts = np.bincount(y_train)
+sample_w = [1/class_counts[label] for label in y_train]
+sampler = WeightedRandomSampler(sample_w, len(sample_w), replacement=True)
+
+train_loader = DataLoader(ds_train, batch_size=8, sampler=sampler)
+val_loader = DataLoader(ds_val,   batch_size=8, shuffle=False)
+test_loader = DataLoader(ds_test,  batch_size=8, shuffle=False)
+
+# ---------- 3. modelo ----------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"💻 Dispositivo utilizado: {device}")
+print("💻  Dispositivo:", device)
+model = RobertaForSequenceClassification.from_pretrained(
+    "roberta-base", num_labels=2).to(device)
+opt = optim.AdamW(model.parameters(), lr=2e-5)
 
-model = RobertaForSequenceClassification.from_pretrained("roberta-base", num_labels=2).to(device)
+# ------ 3.1  focal-loss ----------
 
-optimizer = optim.AdamW(model.parameters(), lr=2e-5)
-# Peso maior para a classe 1 (match), para reduzir falsos negativos
-pesos = torch.tensor([1.0, 1.0]).to(device)
-criterion = nn.CrossEntropyLoss(weight=pesos)
 
-def train_model(model, train_loader, optimizer, criterion, test_loader, epochs=10, patience=2):
-    print(f"📚 Iniciando treinamento por até {epochs} épocas (paciente: {patience})...")
-    best_loss = float('inf')
-    patience_counter = 0
-    # Antes do loop de treinamento, por segurança
-    print(f"🔎 Labels únicos no treino: {set(train_labels)}")
-    
-    for epoch in range(epochs):
+def focal_loss(logits, targets, alpha=(1.0, 1.5), gamma=3):
+    ce = nn.functional.cross_entropy(logits, targets, reduction='none')
+    pt = torch.exp(-ce)
+    at = torch.tensor(alpha, device=logits.device)[targets]
+    return (at*((1-pt)**gamma)*ce).mean()
+
+# ---------- 4. treino ----------
+
+
+def train(num_epochs=8, patience=3):
+    best_val = 1e9
+    wait = 0
+    for ep in range(1, num_epochs+1):
         model.train()
-        total_loss = 0
+        tot = 0
+        for batch in train_loader:
+            opt.zero_grad()
+            inp = {k: v.to(device) for k, v in batch.items() if k != 'labels'}
+            labs = batch['labels'].to(device)
+            loss = focal_loss(model(**inp).logits, labs)
+            loss.backward()
+            opt.step()
+            tot += loss.item()
+        print(f"🔹 Época {ep}  loss={tot/len(train_loader):.4f}", end="  ")
 
-        for batch_idx, batch in enumerate(train_loader):
-            try:
-                optimizer.zero_grad()
-                input_ids = batch.get("input_ids").to(device)
-                attention_mask = batch.get("attention_mask").to(device)
-                labels = batch.get("labels").to(device)
-
-                outputs = model(input_ids, attention_mask=attention_mask)
-                loss = criterion(outputs.logits, labels.long())
-
-                loss.backward()
-                optimizer.step()
-
-                total_loss += loss.item()
-
-                del input_ids, attention_mask, labels, outputs, loss
-                torch.cuda.empty_cache()
-
-            except RuntimeError as e:
-                print("⚠️ Erro CUDA detectado. Limpando cache...")
-                try:
-                    torch.cuda.empty_cache()
-                except Exception as clear_error:
-                    print("Erro ao limpar cache:", clear_error)
-                raise e
-
-        avg_loss = total_loss / len(train_loader)
-        print(f"🔷 Época {epoch + 1} - Perda Média: {avg_loss:.4f}")
-
-        if avg_loss < best_loss:
-            best_loss = avg_loss
-            patience_counter = 0
+        # -------- validação loss ----------
+        model.eval()
+        v_loss = 0
+        with torch.no_grad():
+            for b in val_loader:
+                inp = {k: v.to(device) for k, v in b.items() if k != 'labels'}
+                labs = b['labels'].to(device)
+                v_loss += focal_loss(model(**inp).logits, labs).item()
+        v_loss /= len(val_loader)
+        print(f"val_loss={v_loss:.4f}")
+        if v_loss < best_val:
+            best_val = v_loss
+            wait = 0
         else:
-            patience_counter += 1
-            if patience_counter >= patience:
-                print("🔴 Early stopping ativado.")
+            wait += 1
+            if wait >= patience:
+                print("🛑 early-stopping")
                 break
 
-print("🚀 Iniciando treinamento...")
-train_model(model, train_loader, optimizer, criterion, test_loader, epochs=10)
 
-# model.save_pretrained("modelo_roberta_20000_balanceado_treinado")
-# tokenizer.save_pretrained("modelo_roberta_20000_balanceado_treinado")
-# print("✅ Modelo RoBERTa treinado salvo com sucesso!")
+train()
 
-# Avaliação do modelo
-print("🔍 Avaliando modelo...")
+# ---------- 5. achar melhor threshold na validação ----------
 model.eval()
-predictions, true_labels = [], []
-
+P, Y = [], []
 with torch.no_grad():
-    for batch in test_loader:
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
+    for b in val_loader:
+        inp = {k: v.to(device) for k, v in b.items() if k != 'labels'}
+        Y.extend(b['labels'].numpy())
+        P.extend(torch.softmax(model(**inp).logits, dim=1)[:, 1].cpu().numpy())
 
-        outputs = model(input_ids, attention_mask=attention_mask)
-        probs = torch.softmax(outputs.logits, dim=1)[:, 1].cpu().numpy()  # probabilidade da classe 1 (match)
+best_t, best_f1 = 0.5, 0
+for t in np.arange(0.5, 0.91, 0.01):
+    pred = (np.array(P) >= t).astype(int)
+    f1 = f1_score(Y, pred)
+    if f1 > best_f1:
+        best_f1, best_t = f1, t
+print(f"⭐ Threshold escolhido {best_t:.2f} (F1 val={best_f1:.3f})")
 
-        threshold = 0.78  # Define teu threshold aqui
-        preds = (probs >= threshold).astype(int)  # Classe 1 só se for >= threshold
+# ---------- 6. avaliação no TESTE ----------
 
-        predictions.extend(preds.tolist())
-        true_labels.extend(labels.cpu().numpy().tolist())
-        
-fim = time.time()
-tempo_total = fim - inicio
-print(f"\n⏱️  Tempo total de treinamento: {tempo_total:.2f} segundos")
-        
+
+def evaluate(loader, threshold):
+    pr, tl = [], []
+    with torch.no_grad():
+        for b in loader:
+            inp = {k: v.to(device) for k, v in b.items() if k != 'labels'}
+            probs = torch.softmax(model(**inp).logits,
+                                  dim=1)[:, 1].cpu().numpy()
+            pr.extend((probs >= threshold).astype(int))
+            tl.extend(b['labels'].numpy())
+    return np.array(pr), np.array(tl)
+
+
+preds, true = evaluate(test_loader, best_t)
+
 print("\n📊 Classification Report (RoBERTa):")
-print(classification_report(true_labels, predictions))
+print(classification_report(true, preds, digits=2))
 
-total_acertos = sum([1 for t, p in zip(true_labels, predictions) if t == p])
-total_fp = sum([1 for t, p in zip(true_labels, predictions) if t == 0 and p == 1])
-total_fn = sum([1 for t, p in zip(true_labels, predictions) if t == 1 and p == 0])
-print(f"\n✅ Acertos totais: {total_acertos}")
-print(f"❌ Falsos positivos totais: {total_fp}")
-print(f"🟧 Falsos negativos totais: {total_fn}")
-print(f"📏 Tamanho total: {len(true_labels)} labels / {len(predictions)} preds")
+# matriz de confusão
+cmatrix = confusion_matrix(true, preds, labels=[1, 0])  # [1] primeiro
 
-# Gerar gráfico de acertos, falsos negativos e falsos positivos por grupo
-print("\n📈 Gerando gráfico de acertos, falsos negativos e falsos positivos por grupo...")
+fig, ax = plt.subplots(figsize=(5.2, 4.8))  # canvas levemente maior
+disp = ConfusionMatrixDisplay(
+    confusion_matrix=cmatrix,
+    display_labels=["Match (1)", "Unmatch (0)"]
+)
+disp.plot(cmap=cm.Blues, ax=ax, colorbar=False)
 
-acertos = []
-falsos_positivos = []
-falsos_negativos = []
-grupos = []
-
-for i in range(0, len(true_labels), 500):
-    grupo_true = true_labels[i:i+500]
-    grupo_pred = predictions[i:i+500]
-
-    corretos = sum([1 for t, p in zip(grupo_true, grupo_pred) if t == p])
-    fp = sum([1 for t, p in zip(grupo_true, grupo_pred) if t == 0 and p == 1])
-    fn = sum([1 for t, p in zip(grupo_true, grupo_pred) if t == 1 and p == 0])
-
-    print(f"🔹 Grupo A{len(grupos)+1} - Acertos: {corretos} | Falsos Positivos: {fp} | Falsos Negativos: {fn}")
-
-    acertos.append(corretos)
-    falsos_positivos.append(fp)
-    falsos_negativos.append(fn)
-    grupos.append(f"A{len(grupos) + 1}")
-
-# Gráfico
-plt.figure(figsize=(12, 6))
-x = np.arange(len(grupos))
-largura = 0.3
-plt.bar(x - largura, acertos, width=largura, color="blue", label="Acertos")
-plt.bar(x, falsos_negativos, width=largura, color="orange", label="Falsos Negativos")
-plt.bar(x + largura, falsos_positivos, width=largura, color="red", label="Falsos Positivos")
-plt.xlabel("Amostras (500 perfis cada)")
-plt.ylabel("Quantidade")
-plt.title("Acertos vs Falsos Negativos vs Falsos Positivos (RoBERTa)")
-plt.xticks(x, grupos, rotation=45)
-plt.legend()
-plt.grid(axis="y", linestyle="--", alpha=0.7)
-
+plt.title("Matriz de Confusão – RoBERTa")
 plt.tight_layout()
-plt.savefig("C:/TCC2/pdf_graficos/roberta_20k_4k.pdf")
 
+plt.savefig(
+    "C:/TCC2/pdf_graficos/roberta_confusion_matrix.pdf",
+    bbox_inches="tight",
+    pad_inches=0.05,
+    dpi=300
+)
+plt.show()
+plt.close()
+
+# Impressão dos totais de falsos positivos e falsos negativos
+false_positives = np.sum((true == 0) & (preds == 1))
+false_negatives = np.sum((true == 1) & (preds == 0))
+print(f"Falsos Positivos: {false_positives}")
+print(f"Falsos Negativos: {false_negatives}")
+
+elapsed = time.time() - start_prog
+print(
+    f"⏱️  Tempo total de execução: {elapsed/60:.2f} min  ({elapsed:.1f} seg)")
+
+model.save_pretrained("C:/TCC2/modelos_treinados/modelo_roberta_v3_treinado")
+tok.save_pretrained("C:/TCC2/modelos_treinados/modelo_roberta_v3_treinado")
+print("✅ Modelo e tokenizer salvos.")
+
+# ---------- 7. gráfico ----------
+groups = 8
+true_groups = np.array_split(true, groups)
+pred_groups = np.array_split(preds, groups)
+
+acc, fp, fn, labs = [], [], [], []
+for i, (gt, pr) in enumerate(zip(true_groups, pred_groups)):
+    acc.append((gt == pr).sum())
+    fp.append(((gt == 0) & (pr == 1)).sum())
+    fn.append(((gt == 1) & (pr == 0)).sum())
+    labs.append(f"A{i+1}")
+
+plt.figure(figsize=(12, 6))
+x = np.arange(len(labs))
+w = .3
+plt.bar(x - w, acc, width=w, color='blue', label='Acertos')
+plt.bar(x, fn, width=w, color='orange', label='Falsos Negativos')
+plt.bar(x + w, fp, width=w, color='red', label='Falsos Positivos')
+plt.xticks(x, labs)
+plt.xlabel("Amostras (≈ 362 perfis)")
+plt.title("Acertos vs FN vs FP (RoBERTa)")
+plt.legend()
+plt.grid(axis='y', ls='--', alpha=.6)
+plt.tight_layout()
+plt.savefig("C:/TCC2/pdf_graficos/roberta_v3_2.pdf")
 plt.show()

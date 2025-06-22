@@ -10,8 +10,7 @@ import time
 inicio = time.time()
 caminho_csv = "C:/TCC2/data/usernames_20000_balanceado_embaralhado.csv"
 df = pd.read_csv(caminho_csv)
-# Limitar para 4000 linhas
-df = df.head(4000)
+df = df.head(2898)
 
 df["Name"] = df["Name"].astype(str).str.strip()
 df["Username"] = df["Username"].astype(str).str.strip()
@@ -39,7 +38,7 @@ def custom_levenshtein(name, username):
             distance += 1
     return distance
 
-tamanho_amostra = 500
+tamanho_amostra = 362
 resultados_corretos = []
 falsos_negativos = []
 falsos_positivos = []
@@ -95,7 +94,7 @@ plt.bar(x - largura, acertos, width=largura, color="blue", label="Acertos")
 plt.bar(x, falsos_negativos, width=largura, color="orange", label="Falsos Negativos")
 plt.bar(x + largura, falsos_positivos, width=largura, color="red", label="Falsos Positivos")
 
-plt.xlabel("Amostras (500 perfis cada)")
+plt.xlabel("Amostras (1000 perfis cada)")
 plt.ylabel("Quantidade")
 plt.title("Acertos vs Falsos Negativos vs Falsos Positivos (Levenshtein)")
 plt.xticks(x, grupos, rotation=45)
@@ -103,7 +102,7 @@ plt.legend()
 plt.grid(axis="y", linestyle="--", alpha=0.7)
 
 plt.tight_layout()
-plt.savefig("C:/TCC2/pdf_graficos/levenshtein_4k.pdf")
+plt.savefig("C:/TCC2/pdf_graficos/levenshtein_20k_embaralhado.pdf")
 plt.show()
 
 print("\n📊 Classification Report (Levenshtein):")

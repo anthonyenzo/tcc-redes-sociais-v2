@@ -5,7 +5,7 @@ import pandas as pd
 caminho_json = "C:/TCC2/data/posts.json"
 
 # Número máximo de registros a serem extraídos
-max_registros = 20000  
+max_registros = 48609  
 
 # Usamos um conjunto (set) para garantir perfis únicos
 dados = set()  
@@ -36,8 +36,8 @@ except Exception as e:
 if dados:
     df = pd.DataFrame(list(dados), columns=["Name", "Username"])
 
-    # Salvar CSV final com os 1000 perfis únicos
-    caminho_csv = "C:/TCC2/data/usernames_com_nomes_20000.csv"
+    # Salvar CSV final com os 48.609 perfis únicos
+    caminho_csv = "C:/TCC2/data/names_usernames_48609.csv"
     df.to_csv(caminho_csv, index=False, encoding="utf-8")
 
     print(f"✅ Os primeiros {max_registros} perfis únicos foram extraídos e salvos em {caminho_csv}!")
