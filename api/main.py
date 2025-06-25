@@ -48,7 +48,7 @@ class InputData(BaseModel):
 
 @app.post("/predict/")
 def predict(data: InputData):
-    name = data.name.strip().lower()
+    name = _norm(data.name)
     username = data.username.strip().lower()
 
     inputs = tokenizer(
